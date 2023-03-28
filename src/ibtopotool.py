@@ -53,7 +53,7 @@ def parse_ibtopo(topofile, shortlabel):
 
     Returns: A networkx graph representing the IB network
     """
-    g = nx.DiGraph()
+    g = nx.DiGraph( ranksep=2, ratio="auto",rankdir = "TB")
     switchidx = 0 # Index switches sequentially
     with open(topofile, 'r') as f:
         inblock = False # Switch or Host (Channel Adapter) block
@@ -63,12 +63,12 @@ def parse_ibtopo(topofile, shortlabel):
                 guid = line.split()[2][1:-1]
                 i = line.index('#')
                 s = line[i:].split('"')
-                nodedesc = s[1]
+                nodedesc = '"' + s[1] + '"'
                 sid = "s%d" % switchidx
                 if shortlabel:
                     label = sid
                 else:
-                    label = "%s\n%s" % (guid, nodedesc)
+                    label = '"%s\n%s"' % (guid, nodedesc)
                 g.add_node(guid, desc=nodedesc, type='Switch', label=label)
                 switchidx += 1
             elif line.startswith('Ca'):
@@ -93,9 +93,17 @@ def parse_ibtopo(topofile, shortlabel):
                     g[guid][destguid]['penwidth'] = 1
     return g
 
+def _check_colon_quotes(s):
+    # A quick helper function to check if a string has a colon in it
+    # and if it is quoted properly with double quotes.
+    # refer https://github.com/pydot/pydot/issues/258
+    return ":" in s and (s[0] != '"' or s[-1] != '"')
+
 def gen_dot(graph, out):
     from networkx.drawing.nx_pydot import write_dot
-    write_dot(graph, out)
+    from networkx.drawing.nx_agraph import to_agraph
+    A = to_agraph(graph)
+    print(A)
 
 def gen_slurm(g, out):
     """
@@ -166,15 +174,46 @@ def treeify(g, rootfile):
     todel = []
     for n, nbrs in g.adjacency():
         for nbr in nbrs:
-            if g.nodes[n]['rank'] > g.nodes[nbr]['rank']:
+            if g.nodes[n]['rank'] < g.nodes[nbr]['rank']:
                 todel.append((n, nbr))
-    g.remove_edges_from(todel)
-    return g
+    g2 = nx.Graph(g)
+    # print(todel)
+    # g2.remove_edges_from(todel)
+    return g2
 
 def only_switches(g):
     """Filter out nodes that are not switches"""
-    return g.subgraph([n for n in g if n['type']
-                       == 'Switch'])
+    # print([dir(g[n]) for n in g])
+    return g.subgraph([n for n in g.nodes() if g.nodes()[n]['type']== 'Switch'])
+
+    # return g.subgraph([n for n in g if n['type']
+                    #    == 'Switch'])
+
+
+def create_subgraphs(graph):
+    graph_tmp = nx.Graph(graph)
+    subgroups = {}
+    A = nx.nx_agraph.to_agraph(graph)
+    for n in graph_tmp.nodes():
+        rank = graph_tmp.nodes()[n]['rank']
+        if rank not in subgroups:
+            subgroups[rank] = [n]
+        else:
+            subgroups[rank].append(n)
+        # print(n, graph_tmp.nodes()[n])
+    rank_min = min(subgroups)
+    rank_max = max(subgroups)
+    #print(rank_min, rank_max)
+    for rank in subgroups:
+        if rank == rank_min:
+            sg_rank = "source"
+        elif rank == rank_max:
+            sg_rank = "sink"
+        else:
+            sg_rank = rank
+        _ = A.add_subgraph(subgroups[rank],rank=sg_rank)
+    print(A)
+    return A
 
 def relabel_switch_tree(g):
     """If shortlabels and treeify is in effect, relabel switches taking
@@ -219,12 +258,15 @@ ibtopofile is a file containing the output of 'ibnetdiscover'."""
         out = open(options.output, 'w')
     else:
         out = sys.stdout
+
     if options.switches:
+        # print(graph)
         graph = only_switches(graph)
     if options.treeify:
         graph = treeify(graph, options.treeify)
         if options.shortlabels:
             relabel_switch_tree(graph)
+    graph = create_subgraphs(graph)
     if options.slurm:
         gen_slurm(graph, out)
     else:
